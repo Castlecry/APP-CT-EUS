@@ -1,0 +1,61 @@
+# Built artifacts
+*.apk
+*.aar
+*.ap_
+*.aab
+
+# Files for the ART/Dalvik VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated files
+bin/
+gen/
+out/
+build/
+
+# Kotlin
+.kotlin/
+kotlin-daemon-embeddable-*.jar
+
+# Gradle files
+.gradle/
+build/
+
+# Android Studio / IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+/captures/
+/externalNativeBuild/
+.cxx/
+
+# Local configuration file (contains system-specific paths)
+local.properties
+
+# Log files
+*.log
+
+# Android Studio Navigation Editor temp files
+.navigation/
+
+# Android Studio screenshots
+captures/
+
+# Keystore files
+*.jks
+*.keystore
+*.p12
+
+# Google Services file (if applicable)
+# google-services.json
+
+# System files
+.DS_Store
+Thumbs.db
+
+# DataStore files (optional, usually good to ignore local testing data)
+# user_session.preferences_pb
