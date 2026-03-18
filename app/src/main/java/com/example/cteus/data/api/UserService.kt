@@ -16,15 +16,16 @@ interface UserService {
         @Field("password") password: String
     ): Response<LoginResponse>
 
+    // 修改：直接返回 User 对象，不再包裹 ApiResponse
     @GET("api/v1/user/profile/")
-    suspend fun getProfile(): Response<ApiResponse<User>>
+    suspend fun getProfile(): Response<User>
 
     @PATCH("api/v1/user/updateprofile/")
-    suspend fun updateProfile(@Body request: UpdateProfileRequest): Response<ApiResponse<User>>
+    suspend fun updateProfile(@Body request: UpdateProfileRequest): Response<User>
 
     @Multipart
     @POST("api/v1/user/upload_avatar/")
-    suspend fun uploadAvatar(@Part avatar: MultipartBody.Part): Response<ApiResponse<User>>
+    suspend fun uploadAvatar(@Part avatar: MultipartBody.Part): Response<User>
 
     @POST("api/v1/user/logout/")
     suspend fun logout(): Response<ApiResponse<Unit>>

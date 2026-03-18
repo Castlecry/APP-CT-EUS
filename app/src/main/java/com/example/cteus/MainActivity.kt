@@ -6,6 +6,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -17,9 +22,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.cteus.ui.screens.AIScreen
 import com.example.cteus.ui.screens.LoginScreen
+import com.example.cteus.ui.screens.Model3DScreen
 import com.example.cteus.ui.screens.ProfileScreen
 import com.example.cteus.ui.theme.CTEUSTheme
 import com.example.cteus.ui.viewmodel.UserViewModel
@@ -62,7 +69,7 @@ fun CTEUSApp(viewModel: UserViewModel) {
                 item(
                     icon = {
                         Icon(
-                            painterResource(it.icon),
+                            imageVector = it.icon,
                             contentDescription = it.label
                         )
                     },
@@ -76,8 +83,9 @@ fun CTEUSApp(viewModel: UserViewModel) {
         Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
             val modifier = Modifier.padding(innerPadding)
             when (currentDestination) {
-                AppDestinations.HOME -> Greeting("Home", modifier)
-                AppDestinations.FAVORITES -> Greeting("Favorites", modifier)
+                AppDestinations.HOME -> Greeting("首页", modifier)
+                AppDestinations.MODEL_3D -> Model3DScreen()
+                AppDestinations.AI_ASSISTANT -> AIScreen()
                 AppDestinations.PROFILE -> ProfileScreen(viewModel)
             }
         }
@@ -86,11 +94,12 @@ fun CTEUSApp(viewModel: UserViewModel) {
 
 enum class AppDestinations(
     val label: String,
-    val icon: Int,
+    val icon: ImageVector,
 ) {
-    HOME("首页", R.drawable.ic_home),
-    FAVORITES("收藏", R.drawable.ic_favorite),
-    PROFILE("个人主页", R.drawable.ic_account_box),
+    HOME("首页", Icons.Default.Home),
+    MODEL_3D("3D模型", Icons.Default.ViewInAr),
+    AI_ASSISTANT("AI助手", Icons.Default.AutoAwesome),
+    PROFILE("个人主页", Icons.Default.AccountCircle),
 }
 
 @Composable
