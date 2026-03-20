@@ -20,7 +20,7 @@ import kotlinx.coroutines.withContext
 
 object RetrofitClient {
     private const val TAG = "RetrofitClient"
-    private const val BASE_HOST = "10.134.41.115"
+    private const val BASE_HOST = "10.134.40.147"
     private const val BASE_URL = "http://$BASE_HOST:8000/"
     private var token: String? = null
 

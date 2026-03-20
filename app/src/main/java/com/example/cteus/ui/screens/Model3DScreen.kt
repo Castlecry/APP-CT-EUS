@@ -29,6 +29,7 @@ import com.example.cteus.data.model.OrganPoints
 import com.example.cteus.ui.viewmodel.Model3DViewModel
 import io.github.sceneview.Scene
 import io.github.sceneview.math.Position
+import io.github.sceneview.math.Scale
 import io.github.sceneview.node.ModelNode
 import io.github.sceneview.node.Node
 import io.github.sceneview.node.SphereNode
@@ -37,12 +38,15 @@ import io.github.sceneview.rememberModelLoader
 import io.github.sceneview.rememberEnvironmentLoader
 import io.github.sceneview.rememberOnGestureListener
 import io.github.sceneview.rememberCameraNode
+import io.github.sceneview.rememberCameraManipulator
 import io.github.sceneview.rememberMainLightNode
+import com.google.android.filament.utils.Manipulator
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import com.google.android.filament.Engine
-import com.google.android.filament.MaterialInstance
 import io.github.sceneview.loaders.ModelLoader
 import io.github.sceneview.loaders.MaterialLoader
 import io.github.sceneview.rememberMaterialLoader
@@ -69,17 +73,17 @@ fun Model3DScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { 
+                title = {
                     Text(
                         text = if (selectedCaseId == null) "病例列表" else (caseDetail?.caseName ?: "3D 模型预览"),
                         style = MaterialTheme.typography.titleMedium
-                    ) 
+                    )
                 },
                 navigationIcon = {
                     if (selectedCaseId != null) {
-                        IconButton(onClick = { 
-                            selectedCaseId = null 
-                            viewModel.fetchCaseList() 
+                        IconButton(onClick = {
+                            selectedCaseId = null
+                            viewModel.fetchCaseList()
                         }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
@@ -221,142 +225,153 @@ fun ThreeDViewerContent(
     val modelLoader = rememberModelLoader(engine)
     val materialLoader = rememberMaterialLoader(engine)
     val environmentLoader = rememberEnvironmentLoader(engine)
-    
-    val cameraNode = rememberCameraNode(engine)
-    val mainLightNode = rememberMainLightNode(engine) {
-        intensity = 200_000f
+
+    // 建立唯一的容器节点，它的任务就是负责整体移动以对齐中心
+    val pivotNode = remember { Node(engine) }
+
+    val cameraNode = rememberCameraNode(engine) {
+        position = Position(0f, 0f, 0.3f)
+        lookAt(Position(0f, 0f, 0f))
     }
 
-    val nodes = remember { mutableStateListOf<Node>() }
-    
+    val cameraManipulator = remember {
+        Manipulator.Builder()
+            .orbitHomePosition(0.0f, 0.0f, 0.3f)
+            .targetPosition(0.0f, 0.0f, 0.0f) // 只要模型偏移了，镜头看原点就等于看模型中心
+            .build(Manipulator.Mode.ORBIT)
+    }
+
+    val mainLightNode = rememberMainLightNode(engine) {
+        intensity = 500_000f
+    }
+
+    val glbNodes = remember { mutableStateListOf<ModelNode>() }
+    val sphereNodes = remember { mutableStateListOf<SphereNode>() }
+
     var isSelectingPoint by remember { mutableStateOf(false) }
     var selectedPointIndices by remember { mutableStateOf<Set<Int>>(emptySet()) }
     var pendingPointIndex by remember { mutableStateOf<Int?>(null) }
     var showConfirmDialog by remember { mutableStateOf(false) }
-    
+
     val pointColors = remember { mutableStateMapOf<Int, Color>() }
     val originalPointColors = remember { mutableStateMapOf<Int, Color>() }
-    
-    val sphereNodes = remember { mutableStateListOf<SphereNode>() }
-    
-    // 当前选中的模型类型（懒加载关键）
-    var selectedModelType by remember { mutableStateOf<String?>(null) }
-    
-    // 底部选择栏展开/收起状态
+    var selectedModelTypes by remember { mutableStateOf<Set<String>>(emptySet()) }
     var isModelListExpanded by remember { mutableStateOf(true) }
-    
-    // 创建带颜色的球体节点
+
+    // 【新增核心功能】：自动计算所有子模型的综合中心，并调整 pivotNode 的位置
+    fun updatePivotCenter() {
+        var minX = Float.MAX_VALUE
+        var maxX = -Float.MAX_VALUE
+        var minY = Float.MAX_VALUE
+        var maxY = -Float.MAX_VALUE
+        var minZ = Float.MAX_VALUE
+        var maxZ = -Float.MAX_VALUE
+        var hasData = false
+
+        // 1. 优先读取已加载真实 3D 模型的边界框（Bounding Box）
+        glbNodes.forEach { node ->
+            // 在 SceneView 中，ModelNode 直接提供了 center(中心) 和 extents(包围盒总尺寸)
+            val c = node.center
+            val e = node.extents
+
+            // extents 是完整长宽高，我们除以 2 算出半尺寸 (halfExtent)
+            val hX = e.x / 2f
+            val hY = e.y / 2f
+            val hZ = e.z / 2f
+
+            hasData = true
+            minX = minOf(minX, c.x - hX)
+            maxX = maxOf(maxX, c.x + hX)
+            minY = minOf(minY, c.y - hY)
+            maxY = maxOf(maxY, c.y + hY)
+            minZ = minOf(minZ, c.z - hZ)
+            maxZ = maxOf(maxZ, c.z + hZ)
+        }
+
+        // 2. 如果没有任何 GLB，才退而求其次用点云来算
+        if (!hasData && organPointsList.isNotEmpty()) {
+            organPointsList.forEach { organ ->
+                organ.points.forEach { p ->
+                    if (p.size >= 3) {
+                        hasData = true
+                        minX = minOf(minX, p[0].toFloat())
+                        maxX = maxOf(maxX, p[0].toFloat())
+                        minY = minOf(minY, p[1].toFloat())
+                        maxY = maxOf(maxY, p[1].toFloat())
+                        minZ = minOf(minZ, p[2].toFloat())
+                        maxZ = maxOf(maxZ, p[2].toFloat())
+                    }
+                }
+            }
+        }
+
+        if (hasData) {
+            val cx = (minX + maxX) / 2f
+            val cy = (minY + maxY) / 2f
+            val cz = (minZ + maxZ) / 2f
+
+            // 因为模型缩小了 0.0001，所以偏移距离也乘以 0.0001
+            // 负数代表我们将容器往反方向拉，使得中心正好落入 (0,0,0)
+            pivotNode.position = Position(
+                -cx * 0.0001f,
+                -cy * 0.0001f,
+                -cz * 0.0001f
+            )
+            Log.d("Model3DScreen", "中心重新对齐完成！Pivot坐标设为: ${pivotNode.position}")
+        }
+    }
+
     fun updateSphereNodeColor(index: Int, color: Color) {
         if (index >= 0 && index < sphereNodes.size) {
             val sphereNode = sphereNodes[index]
             try {
                 val materialInstance = sphereNode.materialInstance
                 materialInstance.setColor(colorOf(color))
-                Log.d("Model3DScreen", "Updated sphere $index color")
             } catch (e: Exception) {
                 Log.e("Model3DScreen", "Error updating sphere color: ${e.message}")
             }
         }
     }
-    
+
     fun createColoredSphereNode(engine: Engine, materialLoader: MaterialLoader, position: Position, color: Color): SphereNode {
         val sphereNode = SphereNode(
             engine = engine,
-            radius = 0.03f,
+            radius = 0.000166f,
             center = Position(0f, 0f, 0f)
         )
         sphereNode.position = position
-        
+
         try {
             val materialInstance = materialLoader.createColorInstance(color)
             sphereNode.materialInstance = materialInstance
         } catch (e: Exception) {
             Log.e("Model3DScreen", "Error setting material color: ${e.message}")
         }
-        
+
         return sphereNode
     }
-    
-    // 清理点云节点
-    fun clearPointCloud() {
-        sphereNodes.forEach { _ ->
-            try {
-                engine.destroy()
-            } catch (e: Exception) {
-                Log.e("Model3DScreen", "Error destroying node: ${e.message}")
-            }
-        }
-        sphereNodes.clear()
-        // 只移除 SphereNode，保留 GLB 模型
-        nodes.removeAll { it is SphereNode }
-        selectedPointIndices = emptySet()
-        pointColors.clear()
-        originalPointColors.clear()
-        Log.d("Model3DScreen", "Cleared point cloud, remaining nodes: ${nodes.size}")
-    }
-    
-    // 加载指定器官的点云
+
     fun loadPointCloud(organ: String) {
-        // 先清理现有节点
-        clearPointCloud()
-        
-        val organData: OrganPoints? = organPointsList.find { it.organ == organ }
-        if (organData == null || organData.points.isEmpty()) {
-            Log.d("Model3DScreen", "No point data for organ: $organ")
-            return
-        }
-        
-        Log.d("Model3DScreen", "Loading ${organData.points.size} points for organ: $organ")
-        
-        // 计算点云中心
-        var minX: Double = Double.MAX_VALUE
-        var maxX: Double = -Double.MAX_VALUE
-        var minY: Double = Double.MAX_VALUE
-        var maxY: Double = -Double.MAX_VALUE
-        var minZ: Double = Double.MAX_VALUE
-        var maxZ: Double = -Double.MAX_VALUE
+        val organData = organPointsList.find { it.organ == organ }
+        if (organData == null || organData.points.isEmpty()) return
 
-        organData.points.forEach { point: List<Double> ->
-            if (point.size >= 3) {
-                val xValue: Double = point[0]
-                val yValue: Double = point[1]
-                val zValue: Double = point[2]
-                
-                minX = minOf(minX, xValue)
-                maxX = maxOf(maxX, xValue)
-                minY = minOf(minY, yValue)
-                maxY = maxOf(maxY, yValue)
-                minZ = minOf(minZ, zValue)
-                maxZ = maxOf(maxZ, zValue)
-            }
-        }
-
-        val centerX: Double = (minX + maxX) / 2.0
-        val centerY: Double = (minY + maxY) / 2.0
-        val centerZ: Double = (minZ + maxZ) / 2.0
-        
-        val sizeX: Double = maxX - minX
-        val sizeY: Double = maxY - minY
-        val sizeZ: Double = maxZ - minZ
-        val maxDim: Double = maxOf(sizeX, maxOf(sizeY, sizeZ))
-        val scaleFactor: Double = if (maxDim > 0) 2.0 / maxDim else 1.0
-
-        // 限制最大显示数量，防止 OOM
-        val displayCount: Int = minOf(organData.points.size, 2000)
-        Log.d("Model3DScreen", "Creating $displayCount SphereNodes with radius 0.03f (ORANGE color)")
-        
+        val scaleFactor = 0.0001f
+        val displayCount = minOf(organData.points.size, 2000)
         val orangeColor = Color(0xFFFF9800)
-        
+        val startIndex = sphereNodes.size
+
         for (i in 0 until displayCount) {
-            val point: List<Double> = organData.points[i]
+            val point = organData.points[i]
             if (point.size >= 3) {
-                val scaledX: Float = ((point[0] - centerX) * scaleFactor).toFloat()
-                val scaledY: Float = ((point[1] - centerY) * scaleFactor).toFloat()
-                val scaledZ: Float = ((point[2] - centerZ) * scaleFactor).toFloat()
-                
-                pointColors[i] = orangeColor
-                originalPointColors[i] = orangeColor
-                
+                // 点云使用绝对坐标缩放。它作为 pivotNode 的子节点，会自动跟着模型一起偏移！
+                val scaledX = (point[0] * scaleFactor).toFloat()
+                val scaledY = (point[1] * scaleFactor).toFloat()
+                val scaledZ = (point[2] * scaleFactor).toFloat()
+
+                val pointIndex = startIndex + i
+                pointColors[pointIndex] = orangeColor
+                originalPointColors[pointIndex] = orangeColor
+
                 val sphereNode = createColoredSphereNode(
                     engine = engine,
                     materialLoader = materialLoader,
@@ -364,62 +379,83 @@ fun ThreeDViewerContent(
                     color = orangeColor
                 )
                 sphereNodes.add(sphereNode)
-                // 将点云节点也添加到 nodes 列表中，确保 Scene 能渲染
-                nodes.add(sphereNode)
+                pivotNode.addChildNode(sphereNode) // 添加到中心偏移容器
             }
         }
-        
-        Log.d("Model3DScreen", "Created ${sphereNodes.size} SphereNodes for organ: $organ, total nodes: ${nodes.size}")
     }
 
-    // 加载所有 GLB 模型
-    LaunchedEffect(glbUrls) {
-        // 只清空 GLB 节点，不清空点云节点
-        nodes.removeAll { it is ModelNode }
+    fun removePointCloud(organ: String) {
+        sphereNodes.forEach { pivotNode.removeChildNode(it) }
         sphereNodes.clear()
-        selectedModelType = null
-        
-        Log.d("Model3DScreen", "Starting to load ${glbUrls.size} GLB models")
-        
+        pointColors.clear()
+        originalPointColors.clear()
+        selectedPointIndices = emptySet()
+
+        selectedModelTypes.forEach { selectedOrgan ->
+            loadPointCloud(selectedOrgan)
+        }
+    }
+
+    LaunchedEffect(glbUrls) {
+        // 清理旧节点
+        glbNodes.forEach { pivotNode.removeChildNode(it) }
+        glbNodes.clear()
+        sphereNodes.forEach { pivotNode.removeChildNode(it) }
+        sphereNodes.clear()
+        selectedModelTypes = emptySet()
+
+        var loadedCount = 0
+        val totalModels = glbUrls.size
+
+        if (totalModels == 0) {
+            updatePivotCenter()
+            return@LaunchedEffect
+        }
+
         glbUrls.forEachIndexed { index, url ->
             launch {
                 try {
-                    Log.d("Model3DScreen", "Downloading GLB #$index: $url")
                     val modelBytes = RetrofitClient.downloadFile(url)
                     if (modelBytes != null) {
-                        Log.d("Model3DScreen", "Downloaded ${modelBytes.size} bytes for GLB #$index")
-                        
                         val buffer = ByteBuffer.allocateDirect(modelBytes.size)
                         buffer.order(ByteOrder.nativeOrder())
                         buffer.put(modelBytes)
                         buffer.flip()
-                        
-                        Log.d("Model3DScreen", "Creating model instance for GLB #$index, buffer size: ${buffer.remaining()}")
-                        val modelInstance = modelLoader.createModelInstance(buffer)
-                        if (modelInstance != null) {
-                            Log.d("Model3DScreen", "Model instance created for GLB #$index, creating ModelNode")
-                            val modelNode = ModelNode(
-                                modelInstance = modelInstance,
-                                scaleToUnits = 2.0f,
-                                centerOrigin = Position(0f, 0f, 0f)
-                            )
-                            Log.d("Model3DScreen", "ModelNode created for GLB #$index, adding to nodes")
-                            nodes.add(modelNode)
-                            Log.d("Model3DScreen", "Successfully loaded GLB #$index, total nodes: ${nodes.size}")
-                            
-                            // 加载完所有 GLB 后，调整相机位置到一个默认位置
-                            if (index == glbUrls.size - 1 && nodes.isNotEmpty()) {
-                                // 简单设置相机位置，让用户可以手动调整
-                                cameraNode.position = Position(0f, 0f, 50f)
-                                Log.d("Model3DScreen", "Camera positioned at default location")
+
+                        val filamentAsset = modelLoader.createModelInstance(buffer)
+                        if (filamentAsset != null) {
+                            withContext(Dispatchers.Main) {
+                                val modelNode = ModelNode(modelInstance = filamentAsset)
+                                modelNode.scale = Scale(0.0001f, 0.0001f, 0.0001f)
+                                // 模型依然放在它的绝对位置，不作任何调整
+                                modelNode.position = Position(0f, 0f, 0f)
+
+                                glbNodes.add(modelNode)
+                                pivotNode.addChildNode(modelNode) // 添加到中心偏移容器
+                                loadedCount++
+
+                                // 【关键修改】：当最后1个模型下载并加载完成时，触发一次整体中心计算！
+                                if (loadedCount == totalModels) {
+                                    updatePivotCenter()
+                                }
                             }
                         } else {
-                            Log.e("Model3DScreen", "Failed to create model instance for GLB #$index")
+                            withContext(Dispatchers.Main) {
+                                loadedCount++
+                                if (loadedCount == totalModels) updatePivotCenter()
+                            }
                         }
                     } else {
-                        Log.e("Model3DScreen", "Failed to download GLB #$index")
+                        withContext(Dispatchers.Main) {
+                            loadedCount++
+                            if (loadedCount == totalModels) updatePivotCenter()
+                        }
                     }
                 } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        loadedCount++
+                        if (loadedCount == totalModels) updatePivotCenter()
+                    }
                     Log.e("Model3DScreen", "Error loading GLB #$index: ${e.message}", e)
                 }
             }
@@ -433,9 +469,11 @@ fun ThreeDViewerContent(
             modelLoader = modelLoader,
             materialLoader = materialLoader,
             cameraNode = cameraNode,
+            cameraManipulator = cameraManipulator,
             mainLightNode = mainLightNode,
             environmentLoader = environmentLoader,
-            childNodes = nodes + sphereNodes,
+            // 场景里现在只有这个容器节点
+            childNodes = listOf(pivotNode),
             onGestureListener = rememberOnGestureListener(
                 onSingleTapConfirmed = { _, node ->
                     if (isSelectingPoint) {
@@ -452,10 +490,10 @@ fun ThreeDViewerContent(
             )
         )
 
-        // UI Controls
+        // 下面是所有 UI 控制代码，没有变化
         Column(
             modifier = Modifier
-                .align(Alignment.TopEnd)
+                .align(Alignment.TopStart)
                 .padding(16.dp)
                 .background(Color.Black.copy(alpha = 0.5f), shape = MaterialTheme.shapes.medium)
                 .padding(8.dp)
@@ -472,7 +510,7 @@ fun ThreeDViewerContent(
                     tint = Color.White
                 )
             }
-            
+
             if (selectedPointIndices.isNotEmpty()) {
                 IconButton(
                     onClick = {
@@ -492,10 +530,10 @@ fun ThreeDViewerContent(
                 }
             }
         }
-        
+
         if (showConfirmDialog && pendingPointIndex != null) {
             AlertDialog(
-                onDismissRequest = { 
+                onDismissRequest = {
                     showConfirmDialog = false
                     pendingPointIndex = null
                 },
@@ -525,7 +563,7 @@ fun ThreeDViewerContent(
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { 
+                    TextButton(onClick = {
                         showConfirmDialog = false
                         pendingPointIndex = null
                     }) {
@@ -534,8 +572,7 @@ fun ThreeDViewerContent(
                 }
             )
         }
-        
-        // 模型类型选择栏（底部，可折叠）
+
         Card(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -569,10 +606,10 @@ fun ThreeDViewerContent(
                         tint = Color.Gray
                     )
                 }
-                
+
                 if (isModelListExpanded) {
                     Spacer(modifier = Modifier.height(8.dp))
-                    
+
                     if (modelTypes.isEmpty()) {
                         Text(
                             text = "暂无模型",
@@ -581,21 +618,17 @@ fun ThreeDViewerContent(
                         )
                     } else {
                         modelTypes.forEach { modelType ->
-                            val isSelected = selectedModelType == modelType
+                            val isSelected = selectedModelTypes.contains(modelType)
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
                                         if (isSelected) {
-                                            // 点击已选中的，清除选择
-                                            selectedModelType = null
-                                            clearPointCloud()
-                                            Log.d("Model3DScreen", "Cleared point cloud for: $modelType")
+                                            selectedModelTypes = selectedModelTypes - modelType
+                                            removePointCloud(modelType)
                                         } else {
-                                            // 点击其他，加载对应点云
-                                            selectedModelType = modelType
+                                            selectedModelTypes = selectedModelTypes + modelType
                                             loadPointCloud(modelType)
-                                            Log.d("Model3DScreen", "Loaded point cloud for: $modelType")
                                         }
                                     }
                                     .padding(vertical = 8.dp, horizontal = 12.dp),
@@ -622,8 +655,7 @@ fun ThreeDViewerContent(
                 }
             }
         }
-        
-        // 调试信息叠加
+
         Column(
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -631,12 +663,12 @@ fun ThreeDViewerContent(
                 .background(Color.Black.copy(alpha = 0.5f), shape = MaterialTheme.shapes.medium)
                 .padding(8.dp)
         ) {
-            Text("Total Nodes: ${nodes.size}", color = Color.White)
-            Text("GLBs: ${glbUrls.size}", color = Color.White)
+            Text("Total Nodes: ${glbNodes.size + sphereNodes.size}", color = Color.White)
+            Text("GLBs: ${glbNodes.size}", color = Color.White)
             Text("Points: ${sphereNodes.size}", color = Color(0xFF00FF00))
             Text("Selected: ${selectedPointIndices.size}", color = Color.Yellow)
-            if (selectedModelType != null) {
-                Text("Active: $selectedModelType", color = Color(0xFF00BFFF))
+            if (selectedModelTypes.isNotEmpty()) {
+                Text("Active: ${selectedModelTypes.size} organs", color = Color(0xFF00BFFF))
             }
         }
     }
