@@ -19,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,6 +41,7 @@ import io.github.sceneview.rememberOnGestureListener
 import io.github.sceneview.rememberCameraNode
 import io.github.sceneview.rememberCameraManipulator
 import io.github.sceneview.rememberMainLightNode
+import com.google.android.filament.MaterialInstance
 import com.google.android.filament.utils.Manipulator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -226,7 +228,6 @@ fun ThreeDViewerContent(
     val materialLoader = rememberMaterialLoader(engine)
     val environmentLoader = rememberEnvironmentLoader(engine)
 
-    // 建立唯一的容器节点，它的任务就是负责整体移动以对齐中心
     val pivotNode = remember { Node(engine) }
 
     val cameraNode = rememberCameraNode(engine) {
@@ -237,16 +238,34 @@ fun ThreeDViewerContent(
     val cameraManipulator = remember {
         Manipulator.Builder()
             .orbitHomePosition(0.0f, 0.0f, 0.3f)
-            .targetPosition(0.0f, 0.0f, 0.0f) // 只要模型偏移了，镜头看原点就等于看模型中心
+            .targetPosition(0.0f, 0.0f, 0.0f)
             .build(Manipulator.Mode.ORBIT)
     }
 
     val mainLightNode = rememberMainLightNode(engine) {
-        intensity = 500_000f
+        intensity = 20_000f
     }
 
     val glbNodes = remember { mutableStateListOf<ModelNode>() }
     val sphereNodes = remember { mutableStateListOf<SphereNode>() }
+    
+    // 器官到节点的映射关系 - 用于局部差量更新
+    val organNodesMap = remember { mutableStateMapOf<String, MutableList<SphereNode>>() }
+    
+    // 材质池化 - 预先创建共享材质，避免在循环中创建 MaterialInstance
+    var sharedOrangeMaterial: MaterialInstance? by remember { mutableStateOf(null) }
+    var sharedRedMaterial: MaterialInstance? by remember { mutableStateOf(null) }
+    
+    // 初始化共享材质
+    LaunchedEffect(materialLoader) {
+        try {
+            sharedOrangeMaterial = materialLoader.createColorInstance(Color(0xFFFF9800))
+            sharedRedMaterial = materialLoader.createColorInstance(Color.Red)
+            Log.d("Model3DScreen", "Shared materials created")
+        } catch (e: Exception) {
+            Log.e("Model3DScreen", "Failed to create shared materials: ${e.message}")
+        }
+    }
 
     var isSelectingPoint by remember { mutableStateOf(false) }
     var selectedPointIndices by remember { mutableStateOf<Set<Int>>(emptySet()) }
@@ -258,7 +277,10 @@ fun ThreeDViewerContent(
     var selectedModelTypes by remember { mutableStateOf<Set<String>>(emptySet()) }
     var isModelListExpanded by remember { mutableStateOf(true) }
 
-    // 【新增核心功能】：自动计算所有子模型的综合中心，并调整 pivotNode 的位置
+    // 捕获屏幕真实的宽高像素，用于将 3D 转换回屏幕 2D 坐标
+    var viewWidth by remember { mutableStateOf(1f) }
+    var viewHeight by remember { mutableStateOf(1f) }
+
     fun updatePivotCenter() {
         var minX = Float.MAX_VALUE
         var maxX = -Float.MAX_VALUE
@@ -268,13 +290,10 @@ fun ThreeDViewerContent(
         var maxZ = -Float.MAX_VALUE
         var hasData = false
 
-        // 1. 优先读取已加载真实 3D 模型的边界框（Bounding Box）
         glbNodes.forEach { node ->
-            // 在 SceneView 中，ModelNode 直接提供了 center(中心) 和 extents(包围盒总尺寸)
             val c = node.center
             val e = node.extents
 
-            // extents 是完整长宽高，我们除以 2 算出半尺寸 (halfExtent)
             val hX = e.x / 2f
             val hY = e.y / 2f
             val hZ = e.z / 2f
@@ -288,7 +307,6 @@ fun ThreeDViewerContent(
             maxZ = maxOf(maxZ, c.z + hZ)
         }
 
-        // 2. 如果没有任何 GLB，才退而求其次用点云来算
         if (!hasData && organPointsList.isNotEmpty()) {
             organPointsList.forEach { organ ->
                 organ.points.forEach { p ->
@@ -310,8 +328,6 @@ fun ThreeDViewerContent(
             val cy = (minY + maxY) / 2f
             val cz = (minZ + maxZ) / 2f
 
-            // 因为模型缩小了 0.0001，所以偏移距离也乘以 0.0001
-            // 负数代表我们将容器往反方向拉，使得中心正好落入 (0,0,0)
             pivotNode.position = Position(
                 -cx * 0.0001f,
                 -cy * 0.0001f,
@@ -321,31 +337,34 @@ fun ThreeDViewerContent(
         }
     }
 
-    fun updateSphereNodeColor(index: Int, color: Color) {
+    fun updateSphereNodeColor(index: Int, isSelected: Boolean) {
         if (index >= 0 && index < sphereNodes.size) {
             val sphereNode = sphereNodes[index]
             try {
-                val materialInstance = sphereNode.materialInstance
-                materialInstance.setColor(colorOf(color))
+                // 使用共享材质，避免创建新的 MaterialInstance
+                val material = if (isSelected) sharedRedMaterial else sharedOrangeMaterial
+                material?.let { sphereNode.materialInstance = it }
             } catch (e: Exception) {
                 Log.e("Model3DScreen", "Error updating sphere color: ${e.message}")
             }
         }
     }
 
-    fun createColoredSphereNode(engine: Engine, materialLoader: MaterialLoader, position: Position, color: Color): SphereNode {
+    fun createColoredSphereNode(position: Position): SphereNode {
         val sphereNode = SphereNode(
             engine = engine,
             radius = 0.000166f,
             center = Position(0f, 0f, 0f)
         )
         sphereNode.position = position
-
+        
+        // 使用共享材质，避免每次创建新的 MaterialInstance
         try {
-            val materialInstance = materialLoader.createColorInstance(color)
-            sphereNode.materialInstance = materialInstance
+            sharedOrangeMaterial?.let { material ->
+                sphereNode.materialInstance = material
+            }
         } catch (e: Exception) {
-            Log.e("Model3DScreen", "Error setting material color: ${e.message}")
+            Log.e("Model3DScreen", "Error setting shared material: ${e.message}")
         }
 
         return sphereNode
@@ -359,11 +378,13 @@ fun ThreeDViewerContent(
         val displayCount = minOf(organData.points.size, 2000)
         val orangeColor = Color(0xFFFF9800)
         val startIndex = sphereNodes.size
+        
+        // 创建器官节点列表
+        val organNodes = mutableListOf<SphereNode>()
 
         for (i in 0 until displayCount) {
             val point = organData.points[i]
             if (point.size >= 3) {
-                // 点云使用绝对坐标缩放。它作为 pivotNode 的子节点，会自动跟着模型一起偏移！
                 val scaledX = (point[0] * scaleFactor).toFloat()
                 val scaledY = (point[1] * scaleFactor).toFloat()
                 val scaledZ = (point[2] * scaleFactor).toFloat()
@@ -373,31 +394,33 @@ fun ThreeDViewerContent(
                 originalPointColors[pointIndex] = orangeColor
 
                 val sphereNode = createColoredSphereNode(
-                    engine = engine,
-                    materialLoader = materialLoader,
-                    position = Position(scaledX, scaledY, scaledZ),
-                    color = orangeColor
+                    position = Position(scaledX, scaledY, scaledZ)
                 )
                 sphereNodes.add(sphereNode)
-                pivotNode.addChildNode(sphereNode) // 添加到中心偏移容器
+                organNodes.add(sphereNode)
+                pivotNode.addChildNode(sphereNode)
             }
         }
+        
+        // 保存器官到节点的映射
+        organNodesMap[organ] = organNodes
+        Log.d("Model3DScreen", "Loaded $displayCount points for organ: $organ")
     }
 
     fun removePointCloud(organ: String) {
-        sphereNodes.forEach { pivotNode.removeChildNode(it) }
-        sphereNodes.clear()
-        pointColors.clear()
-        originalPointColors.clear()
-        selectedPointIndices = emptySet()
-
-        selectedModelTypes.forEach { selectedOrgan ->
-            loadPointCloud(selectedOrgan)
+        // 局部差量更新：只移除指定器官的节点
+        val organNodes = organNodesMap[organ]
+        if (organNodes != null) {
+            organNodes.forEach { node ->
+                pivotNode.removeChildNode(node)
+                sphereNodes.remove(node)
+            }
+            organNodesMap.remove(organ)
         }
+        Log.d("Model3DScreen", "Removed points for organ: $organ, remaining: ${sphereNodes.size}")
     }
 
     LaunchedEffect(glbUrls) {
-        // 清理旧节点
         glbNodes.forEach { pivotNode.removeChildNode(it) }
         glbNodes.clear()
         sphereNodes.forEach { pivotNode.removeChildNode(it) }
@@ -427,14 +450,12 @@ fun ThreeDViewerContent(
                             withContext(Dispatchers.Main) {
                                 val modelNode = ModelNode(modelInstance = filamentAsset)
                                 modelNode.scale = Scale(0.0001f, 0.0001f, 0.0001f)
-                                // 模型依然放在它的绝对位置，不作任何调整
                                 modelNode.position = Position(0f, 0f, 0f)
 
                                 glbNodes.add(modelNode)
-                                pivotNode.addChildNode(modelNode) // 添加到中心偏移容器
+                                pivotNode.addChildNode(modelNode)
                                 loadedCount++
 
-                                // 【关键修改】：当最后1个模型下载并加载完成时，触发一次整体中心计算！
                                 if (loadedCount == totalModels) {
                                     updatePivotCenter()
                                 }
@@ -462,7 +483,15 @@ fun ThreeDViewerContent(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onSizeChanged {
+                // 捕获屏幕真实宽高的像素值
+                viewWidth = it.width.toFloat()
+                viewHeight = it.height.toFloat()
+            }
+    ) {
         Scene(
             modifier = Modifier.fillMaxSize(),
             engine = engine,
@@ -472,25 +501,79 @@ fun ThreeDViewerContent(
             cameraManipulator = cameraManipulator,
             mainLightNode = mainLightNode,
             environmentLoader = environmentLoader,
-            // 场景里现在只有这个容器节点
             childNodes = listOf(pivotNode),
             onGestureListener = rememberOnGestureListener(
-                onSingleTapConfirmed = { _, node ->
-                    if (isSelectingPoint) {
-                        val tappedSphere = node as? SphereNode
-                        if (tappedSphere != null) {
-                            val index = sphereNodes.indexOf(tappedSphere)
-                            if (index != -1) {
-                                pendingPointIndex = index
-                                showConfirmDialog = true
+                onSingleTapConfirmed = { motionEvent, _ ->
+                    if (isSelectingPoint && sphereNodes.isNotEmpty() && viewWidth > 0 && viewHeight > 0) {
+                        var closestIndex = -1
+                        var minDistance = Float.MAX_VALUE
+
+                        try {
+                            // 【核心改动】：使用矩阵运算将 3D 世界的点完美投影到 2D 手机屏幕像素上
+                            val camera = cameraNode.camera
+                            if (camera != null) {
+                                val viewMatrixDouble = DoubleArray(16)
+                                val projMatrixDouble = DoubleArray(16)
+                                camera.getViewMatrix(viewMatrixDouble)
+                                camera.getProjectionMatrix(projMatrixDouble)
+
+                                val viewMatrix = FloatArray(16)
+                                val projMatrix = FloatArray(16)
+                                for (i in 0..15) {
+                                    viewMatrix[i] = viewMatrixDouble[i].toFloat()
+                                    projMatrix[i] = projMatrixDouble[i].toFloat()
+                                }
+
+                                val viewProjMatrix = FloatArray(16)
+                                android.opengl.Matrix.multiplyMM(viewProjMatrix, 0, projMatrix, 0, viewMatrix, 0)
+
+                                sphereNodes.forEachIndexed { index, sphereNode ->
+                                    // 获取该球体最终的绝对世界坐标
+                                    val worldPos = sphereNode.worldPosition
+                                    val posVec = floatArrayOf(worldPos.x, worldPos.y, worldPos.z, 1f)
+                                    val clipVec = FloatArray(4)
+
+                                    // 矩阵乘法投影
+                                    android.opengl.Matrix.multiplyMV(clipVec, 0, viewProjMatrix, 0, posVec, 0)
+
+                                    // 仅计算在摄像机前方的点
+                                    if (clipVec[3] > 0.0001f) {
+                                        val ndcX = clipVec[0] / clipVec[3]
+                                        val ndcY = clipVec[1] / clipVec[3]
+
+                                        // 转换为屏幕真实 X、Y 像素坐标
+                                        val screenX = (ndcX + 1f) / 2f * viewWidth
+                                        val screenY = (1f - ndcY) / 2f * viewHeight
+
+                                        // 完美对比真正的 2D 像素距离
+                                        val dx = screenX - motionEvent.x
+                                        val dy = screenY - motionEvent.y
+                                        val distance = kotlin.math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+
+                                        if (distance < minDistance) {
+                                            minDistance = distance
+                                            closestIndex = index
+                                        }
+                                    }
+                                }
+
+                                Log.d("Model3DScreen", "Tap at (${motionEvent.x}, ${motionEvent.y}), Closest=$closestIndex, Dist=$minDistance px")
+
+                                // 吸附范围扩大到 100 像素，闭着眼睛都能点到
+                                if (closestIndex != -1 && minDistance < 100f) {
+                                    pendingPointIndex = closestIndex
+                                    showConfirmDialog = true
+                                }
                             }
+                        } catch (e: Exception) {
+                            Log.e("Model3DScreen", "投影计算失败: ${e.message}")
                         }
                     }
                 }
             )
         )
 
-        // 下面是所有 UI 控制代码，没有变化
+        // UI 悬浮控件不变
         Column(
             modifier = Modifier
                 .align(Alignment.TopStart)
@@ -515,9 +598,8 @@ fun ThreeDViewerContent(
                 IconButton(
                     onClick = {
                         selectedPointIndices.forEach { index ->
-                            val originalColor = originalPointColors[index] ?: Color(0xFFFF9800)
-                            pointColors[index] = originalColor
-                            updateSphereNodeColor(index, originalColor)
+                            pointColors[index] = originalPointColors[index] ?: Color(0xFFFF9800)
+                            updateSphereNodeColor(index, false)
                         }
                         selectedPointIndices = emptySet()
                     }
@@ -532,27 +614,48 @@ fun ThreeDViewerContent(
         }
 
         if (showConfirmDialog && pendingPointIndex != null) {
+            val pointLocal = sphereNodes.getOrNull(pendingPointIndex!!)?.position
+            val coordText = if (pointLocal != null) {
+                // 【核心改动】：为了展示正确坐标，将 0.0001 的缩放还原，展示真实的医学坐标数据
+                val origX = pointLocal.x * 10000f
+                val origY = pointLocal.y * 10000f
+                val origZ = pointLocal.z * 10000f
+                "真实坐标: (${String.format("%.2f", origX)}, ${String.format("%.2f", origY)}, ${String.format("%.2f", origZ)})"
+            } else {
+                ""
+            }
+
             AlertDialog(
                 onDismissRequest = {
                     showConfirmDialog = false
                     pendingPointIndex = null
                 },
                 title = { Text("确认选择") },
-                text = { Text("您确定要选择这个点吗？") },
+                text = {
+                    Column {
+                        Text("您确定要选择这个点吗？")
+                        if (coordText.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = coordText,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                },
                 confirmButton = {
                     TextButton(onClick = {
                         pendingPointIndex?.let { index ->
                             val newSelectedIndices = selectedPointIndices.toMutableSet()
                             if (newSelectedIndices.contains(index)) {
                                 newSelectedIndices.remove(index)
-                                val originalColor = originalPointColors[index] ?: Color(0xFFFF9800)
-                                pointColors[index] = originalColor
-                                updateSphereNodeColor(index, originalColor)
+                                pointColors[index] = originalPointColors[index] ?: Color(0xFFFF9800)
+                                updateSphereNodeColor(index, false)
                             } else {
                                 newSelectedIndices.add(index)
-                                val highlightColor = Color.Red
-                                pointColors[index] = highlightColor
-                                updateSphereNodeColor(index, highlightColor)
+                                pointColors[index] = Color.Red
+                                updateSphereNodeColor(index, true)
                             }
                             selectedPointIndices = newSelectedIndices
                         }
