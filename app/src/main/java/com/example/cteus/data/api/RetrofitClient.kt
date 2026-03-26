@@ -20,7 +20,7 @@ import kotlinx.coroutines.withContext
 
 object RetrofitClient {
     private const val TAG = "RetrofitClient"
-    private const val BASE_HOST = "10.134.40.190"
+    private const val BASE_HOST = "10.134.40.220"
     private const val BASE_URL = "http://$BASE_HOST:8000/"
     private var token: String? = null
 
@@ -113,15 +113,37 @@ object RetrofitClient {
         .followSslRedirects(false)
         .build()
 
+    // AI 对话专用客户端，设置 5 分钟超时
+    val aiClient = getUnsafeOkHttpClientBuilder()
+        .dns(dns)
+        .addInterceptor(authInterceptor)
+        .addInterceptor(responseInterceptor)
+        .addInterceptor(loggingInterceptor)
+        .connectTimeout(10, TimeUnit.MINUTES)
+        .readTimeout(10, TimeUnit.MINUTES)
+        .writeTimeout(10, TimeUnit.MINUTES)
+        .followRedirects(true)
+        .followSslRedirects(false)
+        .build()
+
     private val retrofit = Retrofit.Builder()
         .baseUrl(BASE_URL)
         .client(okHttpClient)
         .addConverterFactory(GsonConverterFactory.create())
         .build()
 
+    // AI 服务使用单独的 Retrofit 实例，配置更长的超时时间
+    private val aiRetrofit = Retrofit.Builder()
+        .baseUrl(BASE_URL)
+        .client(aiClient)
+        .addConverterFactory(GsonConverterFactory.create())
+        .build()
+
     val userService: UserService by lazy { retrofit.create(UserService::class.java) }
     val caseService: CaseService by lazy { retrofit.create(CaseService::class.java) }
-    val aiService: AIService by lazy { retrofit.create(AIService::class.java) }
+    val aiService: AIService by lazy { aiRetrofit.create(AIService::class.java) }
+    val examService: ExamService by lazy { retrofit.create(ExamService::class.java) }
+    val knowledgeCardService: KnowledgeCardService by lazy { retrofit.create(KnowledgeCardService::class.java) }
 
     /**
      * 手动下载文件

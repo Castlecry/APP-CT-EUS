@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Book
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.UploadFile
@@ -25,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.cteus.data.model.User
+import com.example.cteus.ui.viewmodel.KnowledgeCardViewModel
 import com.example.cteus.ui.viewmodel.UserViewModel
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
@@ -33,7 +35,7 @@ import java.io.File
 import java.io.FileOutputStream
 
 @Composable
-fun ProfileScreen(viewModel: UserViewModel = viewModel()) {
+fun ProfileScreen(viewModel: UserViewModel = viewModel(), knowledgeCardViewModel: KnowledgeCardViewModel = viewModel()) {
     val user by viewModel.userProfile.collectAsState()
     val error by viewModel.error.collectAsState()
     var currentScreen by remember { mutableStateOf("profile") }
@@ -61,14 +63,18 @@ fun ProfileScreen(viewModel: UserViewModel = viewModel()) {
                 viewModel = viewModel
             )
         }
+        "knowledge_cards" -> {
+            KnowledgeCardScreen(viewModel = knowledgeCardViewModel)
+        }
         else -> {
             ProfileContent(
                 user = user,
+                viewModel = viewModel,
                 onLogout = { viewModel.logout() },
                 onEditClick = { currentScreen = "edit" },
                 onCaseManagementClick = { currentScreen = "case_management" },
                 onCaseListClick = { currentScreen = "case_list" },
-                viewModel = viewModel
+                onKnowledgeCardsClick = { currentScreen = "knowledge_cards" }
             )
         }
     }
@@ -87,11 +93,12 @@ fun ProfileScreen(viewModel: UserViewModel = viewModel()) {
 @Composable
 fun ProfileContent(
     user: User?,
+    viewModel: UserViewModel,
     onLogout: () -> Unit,
     onEditClick: () -> Unit,
     onCaseManagementClick: () -> Unit,
     onCaseListClick: () -> Unit,
-    viewModel: UserViewModel
+    onKnowledgeCardsClick: () -> Unit
 ) {
     val context = LocalContext.current
     val launcher = rememberLauncherForActivityResult(
@@ -164,6 +171,12 @@ fun ProfileContent(
                         icon = Icons.Default.History,
                         title = "病例历史记录",
                         onClick = onCaseListClick
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                    MenuRow(
+                        icon = Icons.Default.Book,
+                        title = "知识卡片",
+                        onClick = onKnowledgeCardsClick
                     )
                 }
             }

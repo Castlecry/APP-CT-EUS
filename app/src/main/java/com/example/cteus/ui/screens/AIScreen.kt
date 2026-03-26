@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -39,6 +40,7 @@ import coil.compose.AsyncImage
 import com.example.cteus.data.model.AIMessage
 import com.example.cteus.data.model.AISession
 import com.example.cteus.ui.viewmodel.AIViewModel
+import com.example.cteus.ui.viewmodel.KnowledgeCardViewModel
 import kotlinx.coroutines.launch
 
 /**
@@ -185,7 +187,7 @@ fun androidx.compose.ui.text.AnnotatedString.Builder.appendInlineMarkdown(text: 
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun AIScreen(viewModel: AIViewModel = viewModel()) {
+fun AIScreen(viewModel: AIViewModel = viewModel(), knowledgeCardViewModel: KnowledgeCardViewModel = viewModel()) {
     val context = LocalContext.current
     val sessions by viewModel.sessions.collectAsState()
     val messages by viewModel.messages.collectAsState()
@@ -200,6 +202,11 @@ fun AIScreen(viewModel: AIViewModel = viewModel()) {
 
     var showRenameDialog by remember { mutableStateOf<AISession?>(null) }
     var showDeleteConfirm by remember { mutableStateOf<AISession?>(null) }
+    var isSelectionMode by remember { mutableStateOf(false) }
+    var selectedMessageIds by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var showExtractDialog by remember { mutableStateOf(false) }
+    var showExtractSuccessSnackbar by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetMultipleContents()
@@ -212,7 +219,55 @@ fun AIScreen(viewModel: AIViewModel = viewModel()) {
         viewModel.fetchHistory(null)
     }
 
+    LaunchedEffect(showExtractSuccessSnackbar) {
+        if (showExtractSuccessSnackbar) {
+            snackbarHostState.showSnackbar("知识卡片提取成功")
+            showExtractSuccessSnackbar = false
+        }
+    }
+
     val currentTitle = sessions.find { it.sessionId == currentSessionId }?.sessionTitle ?: "AI 助手"
+
+    if (showExtractDialog) {
+        AlertDialog(
+            onDismissRequest = { showExtractDialog = false },
+            title = { Text("提取知识卡片") },
+            text = {
+                Column {
+                    Text("已选择 ${selectedMessageIds.size} 条消息，是否提取为知识卡片？")
+                    if (messages.any { it.role == "user" && selectedMessageIds.contains(it.messageId) }) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "提示：包含用户消息，提取内容将以AI回复为主。",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    knowledgeCardViewModel.extractKnowledgeCard(selectedMessageIds.toList()) {
+                        showExtractDialog = false
+                        isSelectionMode = false
+                        selectedMessageIds = emptySet()
+                        showExtractSuccessSnackbar = true
+                    }
+                }) {
+                    Text("确认提取")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showExtractDialog = false
+                    isSelectionMode = false
+                    selectedMessageIds = emptySet()
+                }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -333,26 +388,61 @@ fun AIScreen(viewModel: AIViewModel = viewModel()) {
     ) {
         Scaffold(
             topBar = {
-                CenterAlignedTopAppBar(
-                    title = { Text(currentTitle) },
-                    navigationIcon = {
-                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                            Icon(Icons.Default.Menu, contentDescription = "Menu")
+                if (isSelectionMode) {
+                    TopAppBar(
+                        title = { Text("已选择 ${selectedMessageIds.size} 条消息") },
+                        navigationIcon = {
+                            IconButton(onClick = {
+                                isSelectionMode = false
+                                selectedMessageIds = emptySet()
+                            }) {
+                                Icon(Icons.Default.Close, contentDescription = "取消")
+                            }
+                        },
+                        actions = {
+                            TextButton(
+                                onClick = { showExtractDialog = true },
+                                enabled = selectedMessageIds.isNotEmpty()
+                            ) {
+                                Text("提取", color = if (selectedMessageIds.isNotEmpty()) MaterialTheme.colorScheme.primary else Color.Gray)
+                            }
                         }
-                    },
-                    actions = {
-                        IconButton(onClick = { viewModel.createSession { viewModel.fetchHistory(it) } }) {
-                            Icon(Icons.Default.AddCircleOutline, contentDescription = "New Chat", tint = MaterialTheme.colorScheme.primary)
+                    )
+                } else {
+                    CenterAlignedTopAppBar(
+                        title = { Text(currentTitle) },
+                        navigationIcon = {
+                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                Icon(Icons.Default.Menu, contentDescription = "Menu")
+                            }
+                        },
+                        actions = {
+                            IconButton(onClick = { isSelectionMode = true }) {
+                                Icon(Icons.Default.Bookmark, contentDescription = "知识卡片", tint = MaterialTheme.colorScheme.primary)
+                            }
+                            IconButton(onClick = { viewModel.createSession { viewModel.fetchHistory(it) } }) {
+                                Icon(Icons.Default.AddCircleOutline, contentDescription = "New Chat", tint = MaterialTheme.colorScheme.primary)
+                            }
                         }
-                    }
-                )
-            }
+                    )
+                }
+            },
+            snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
         ) { padding ->
             Box(modifier = Modifier.padding(padding).fillMaxSize()) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     MessageList(
                         messages = messages,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        isSelectionMode = isSelectionMode,
+                        selectedMessageIds = selectedMessageIds,
+                        onMessageSelect = { messageId ->
+                            if (selectedMessageIds.contains(messageId)) {
+                                selectedMessageIds = selectedMessageIds - messageId
+                            } else {
+                                selectedMessageIds = selectedMessageIds + messageId
+                            }
+                        }
                     )
 
                     if (selectedFiles.isNotEmpty()) {
@@ -469,7 +559,13 @@ fun FilePreviewBar(uris: List<Uri>, onRemove: (Uri) -> Unit) {
 }
 
 @Composable
-fun MessageList(messages: List<AIMessage>, modifier: Modifier = Modifier) {
+fun MessageList(
+    messages: List<AIMessage>,
+    modifier: Modifier = Modifier,
+    isSelectionMode: Boolean = false,
+    selectedMessageIds: Set<Int> = emptySet(),
+    onMessageSelect: (Int) -> Unit = {}
+) {
     val listState = rememberLazyListState()
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
@@ -484,16 +580,38 @@ fun MessageList(messages: List<AIMessage>, modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         items(messages) { message ->
-            MessageItem(message)
+            MessageItem(
+                message = message,
+                isSelectionMode = isSelectionMode,
+                isSelected = selectedMessageIds.contains(message.messageId),
+                onSelect = { onMessageSelect(message.messageId) }
+            )
         }
     }
 }
 
 @Composable
-fun MessageItem(message: AIMessage) {
+fun MessageItem(
+    message: AIMessage,
+    isSelectionMode: Boolean = false,
+    isSelected: Boolean = false,
+    onSelect: () -> Unit = {}
+) {
     val isUser = message.role == "user"
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (isSelectionMode) {
+                    Modifier.clickable(onClick = onSelect)
+                } else Modifier
+            )
+            .background(
+                if (isSelected && isSelectionMode) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                else Color.Transparent,
+                RoundedCornerShape(8.dp)
+            )
+            .padding(if (isSelectionMode) 4.dp else 0.dp),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
         if (!isUser) {
@@ -504,6 +622,15 @@ fun MessageItem(message: AIMessage) {
                 Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
             }
             Spacer(Modifier.width(8.dp))
+        }
+
+        if (isSelectionMode) {
+            Checkbox(
+                checked = isSelected,
+                onCheckedChange = { onSelect() },
+                modifier = Modifier.align(Alignment.CenterVertically)
+            )
+            Spacer(Modifier.width(4.dp))
         }
 
         Column(horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
@@ -518,14 +645,12 @@ fun MessageItem(message: AIMessage) {
                 modifier = Modifier.widthIn(max = 280.dp)
             ) {
                 if (isUser) {
-                    // 用户消息直接显示普通文本
                     Text(
                         text = message.content,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         fontSize = 15.sp
                     )
                 } else {
-                    // AI 消息使用 Markdown 格式化显示
                     Text(
                         text = markdownToAnnotatedString(message.content),
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),

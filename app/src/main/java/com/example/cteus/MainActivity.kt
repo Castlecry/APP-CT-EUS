@@ -25,11 +25,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.cteus.ui.screens.AIScreen
+import com.example.cteus.ui.screens.ExamScreen
 import com.example.cteus.ui.screens.LoginScreen
 import com.example.cteus.ui.screens.Model3DScreen
 import com.example.cteus.ui.screens.ProfileScreen
 import com.example.cteus.ui.theme.CTEUSTheme
+import com.example.cteus.ui.viewmodel.KnowledgeCardViewModel
 import com.example.cteus.ui.viewmodel.UserViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -83,10 +86,10 @@ fun CTEUSApp(viewModel: UserViewModel) {
         Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
             val modifier = Modifier.padding(innerPadding)
             when (currentDestination) {
-                AppDestinations.HOME -> Greeting("首页", modifier)
+                AppDestinations.HOME -> ExamScreen()
                 AppDestinations.MODEL_3D -> Model3DScreen()
                 AppDestinations.AI_ASSISTANT -> AIScreen()
-                AppDestinations.PROFILE -> ProfileScreen(viewModel)
+                AppDestinations.PROFILE -> ProfileScreen(viewModel, viewModel())
             }
         }
     }
@@ -96,16 +99,8 @@ enum class AppDestinations(
     val label: String,
     val icon: ImageVector,
 ) {
-    HOME("首页", Icons.Default.Home),
+    HOME("知识训练", Icons.Default.Home),
     MODEL_3D("3D模型", Icons.Default.ViewInAr),
     AI_ASSISTANT("AI助手", Icons.Default.AutoAwesome),
     PROFILE("个人主页", Icons.Default.AccountCircle),
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Welcome to $name Screen!",
-        modifier = modifier
-    )
 }
